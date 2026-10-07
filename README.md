@@ -15,7 +15,6 @@ The API supports KML documents and Shapefile ZIP archives. Processed file metada
 - [API Reference](#api-reference)
 - [Measurement Model](#measurement-model)
 - [Testing](#testing)
-- [Limitations](#limitations)
 
 ## Features
 
@@ -265,18 +264,4 @@ python sample_data/generate_samples.py
 - Unexpected processing failures return `500 Internal Server Error`.
 - Invalid or unsupported geometries are represented in measurement status fields where possible instead of stopping the complete response.
 
-## Limitations and Future Work
 
-The current implementation is designed for local SQLite-backed processing. Potential next steps include:
-
-- PostgreSQL/PostGIS support
-- Authentication and authorization
-- Object storage for uploaded files
-- Background processing for large uploads
-- Configurable CRS selection beyond automatic UTM
-- Rate limiting and production deployment configuration
-- A frontend map viewer for processed geometries
-
-## License
-
-Add the project license and copyright information here when the repository license is finalized.
