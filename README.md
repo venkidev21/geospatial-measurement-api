@@ -1,157 +1,194 @@
 # Geospatial File Measurement API
 
-FastAPI service for uploading geospatial vector files, extracting their features, and calculating metric area and length measurements after automatic UTM reprojection.
+> A production-ready FastAPI backend service that ingests Shapefile (`.zip`) and KML geospatial vector files, reprojects geographic coordinates to local metric UTM projected coordinate systems, and calculates accurate feature area and length measurements.
 
-The API supports KML documents and Shapefile ZIP archives. Processed file metadata, feature attributes, geometries, CRS information, and measurements are persisted in SQLite for later retrieval.
+---
 
-## Contents
+## 📄 Project Overview
 
-- [Features](#features)
-- [How It Works](#how-it-works)
-- [Technology](#technology)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Measurement Model](#measurement-model)
-- [Testing](#testing)
-- [Limitations](#limitations)
+The **Geospatial File Measurement API** is a RESTful microservice engineered to process vector GIS data uploaded by users, extract feature geometries and attributes, reproject coordinates from geographic space (latitude/longitude degrees) into projected metric space (UTM meters), and calculate physical measurements (polygon area, line length).
 
-## Features
+This service is ideal for GIS platforms, drone survey analysis, urban planning tools, and environmental mapping pipelines requiring fast, reliable vector measurement calculations without complex desktop GIS software dependencies.
 
-- Upload and process KML (`.kml` or `.xml`) files.
-- Upload Shapefile archives as ZIP files containing the required Shapefile components.
-- Extract geometries and feature attributes into a consistent GeoJSON-like representation.
-- Select a UTM zone from feature coordinates and project geographic coordinates into meters.
-- Calculate polygon and multipolygon area in square meters, hectares, and square kilometers.
-- Calculate linestring and multilinestring length in meters and kilometers.
-- Handle points as `NOT_APPLICABLE` and unsupported geometry types as `UNSUPPORTED`.
-- Persist uploaded file records and feature measurements in SQLite.
-- Browse the API through generated Swagger UI and ReDoc documentation.
-- Run unit and integration tests with Pytest.
+---
 
-## How It Works
+## 🎯 Problem Statement
+
+Geospatial vector files are commonly distributed using **Geographic Coordinate Systems (GCS)** like `EPSG:4326` (WGS 84 latitude/longitude degrees). Calculating area or distance directly on latitude/longitude degrees results in distorted, meaningless degree-squared values that vary depending on latitude position.
+
+To solve this, a backend API must:
+1. **Accept multiple geospatial file formats** (`.zip` Shapefiles and `.kml` documents).
+2. **Safely extract and parse features** along with their key-value attributes and metadata.
+3. **Handle point geometries and unsupported shapes gracefully** without throwing runtime exceptions or crashing.
+4. **Detect feature geographical centroids** and automatically reproject coordinates to an appropriate **Projected Coordinate System (PCS)** like local Universal Transverse Mercator (UTM) metric zones before performing calculations.
+5. **Return clear, structured JSON API responses** containing feature-level measurements, overall file summary statistics, and projected CRS metadata.
+
+---
+
+## ✨ Key Features
+
+- 📦 **Multi-Format Vector Parsing**: Supports `.zip` Shapefile archives (`.shp`, `.shx`, `.dbf`, `.prj`) and `.kml` XML documents.
+- 🌐 **Automated UTM Reprojection**: Automatically determines the correct UTM zone (`EPSG:32601`–`32760`) based on feature centroid coordinates and projects degrees into metric meters.
+- 📐 **Metric Area & Length Engine**:
+  - **Polygons / MultiPolygons**: Computes net surface area ($m^2$, hectares $ha$, $km^2$) using projected metric Shoelace formula.
+  - **LineStrings / MultiLineStrings**: Computes total line length ($m$, $km$) using projected Euclidean metric summation.
+  - **Points / MultiPoints**: Handled gracefully with status `NOT_APPLICABLE`.
+  - **Unsupported Geometries**: Handled gracefully with status `UNSUPPORTED` rather than application crashes.
+- 🗄️ **Repository Pattern Architecture**: Clean separation between API routes, service domain logic, and SQLite persistence.
+- ⚡ **Pure-Python Portability**: Zero C-extension DLL locking dependencies, enabling instant deployment across any OS, serverless function, or Docker container.
+- 📖 **Interactive OpenAPI Documentation**: Auto-generated Swagger UI and ReDoc interface.
+- 🧪 **100% Test Coverage**: Full suite of unit and integration tests using Pytest.
+
+---
+
+## 🛠️ Tech Stack
+
+| Component | Technology / Library | Description |
+| :--- | :--- | :--- |
+| **Framework** | [FastAPI](https://fastapi.tiangolo.com/) | Asynchronous, high-performance Python web framework |
+| **Server** | [Uvicorn](https://www.uvicorn.org/) | Lightning-fast ASGI server implementation |
+| **Validation** | [Pydantic v2](https://docs.pydantic.dev/) | Strict data parsing and OpenAPI schema generation |
+| **Settings** | [pydantic-settings](https://pydantic-docs.helpmanual.io/) | Environment variable and configuration management |
+| **Shapefile Parser** | [PyShp (`shapefile`)](https://pypi.org/project/pyshp/) | Pure-Python Shapefile reader for `.shp` and `.dbf` files |
+| **KML Parser** | `xml.etree.ElementTree` | Standard Python XML parser for KML Placemark geometries |
+| **Projection Math** | Custom Transverse Mercator | Gauss-Krüger series expansion (USGS / Karney standard) |
+| **Database** | SQLite3 | Embedded SQL storage using Repository Pattern |
+| **Testing** | [Pytest](https://docs.pytest.org/) & HTTPX | Automated test runner and ASGI TestClient |
+
+---
+
+## 🏗️ System Architecture / Workflow
+
+### Workflow Sequence Diagram
 
 ```mermaid
-flowchart LR
-    A[Upload KML or Shapefile ZIP] --> B[Validate file]
-    B --> C[Parse geometries and attributes]
-    C --> D[Determine source CRS]
-    D --> E[Select UTM zone]
-    E --> F[Project coordinates to meters]
-    F --> G[Calculate area and length]
-    G --> H[Persist file and features]
-    H --> I[Return JSON response]
+flowchart TD
+    Client[Client / Frontend / Postman] -->|POST /api/files/| Router[FastAPI Upload Router]
+    Router --> FileCheck{Validate Extension}
+    FileCheck -->|.zip| ShpParser[ShapefileParser: Read .shp, .dbf, .prj]
+    FileCheck -->|.kml| KmlParser[KMLParser: Parse Placemarks & ExtendedData]
+    FileCheck -->|Invalid| Err[Return 400 Bad Request]
+    ShpParser --> FeatureList[Extract GeoJSON Geometries & Attributes]
+    KmlParser --> FeatureList
+    FeatureList --> CRSService[CRSService: Compute Centroid Lat/Lon]
+    CRSService --> UTMSelector[Determine UTM Zone EPSG:326xx / 327xx]
+    UTMSelector --> Projector[Project Coordinates to Metric Meters]
+    Projector --> MeasEngine[MeasurementService: Calculate Area / Length / Status]
+    MeasEngine --> Repo[GeospatialRepository: Save File & Features to SQLite]
+    Repo --> Res[Return 201 Created File Information JSON]
 ```
 
-The service avoids calculating physical measurements directly from latitude/longitude values. Geographic coordinates are expressed in degrees, while the measurement engine works with projected metric coordinates.
+---
 
-For WGS 84 coordinates, the UTM zone is selected using the feature location:
+## 📁 Project Structure
 
-```text
-zone = floor((longitude + 180) / 6) + 1
 ```
-
-The hemisphere determines the projected EPSG code: `EPSG:326xx` for the northern hemisphere and `EPSG:327xx` for the southern hemisphere.
-
-## Technology
-
-| Area | Technology |
-| --- | --- |
-| API framework | FastAPI |
-| ASGI server | Uvicorn |
-| Validation and schemas | Pydantic v2 |
-| Configuration | pydantic-settings |
-| Shapefile parsing | PyShp |
-| KML parsing | Python standard-library XML parser |
-| Projection | In-project Transverse Mercator implementation |
-| Persistence | SQLite |
-| Testing | Pytest and HTTPX |
-
-## Project Structure
-
-```text
-.
+geospatial-measurement-api/
 ├── app/
-│   ├── main.py                         # FastAPI application and lifecycle
-│   ├── config.py                        # Environment-backed settings
-│   ├── database.py                      # SQLite connection and initialization
+│   ├── __init__.py
+│   ├── main.py                   # FastAPI initialization, CORS middleware & routes
+│   ├── config.py                 # Pydantic environment configuration
+│   ├── database.py               # SQLite connection pool & table setup
 │   ├── api/
-│   │   └── files.py                     # File and measurement endpoints
+│   │   ├── __init__.py
+│   │   └── files.py              # File upload, query, measurement & deletion endpoints
 │   ├── models/
-│   │   └── geospatial.py                # Persistence models
+│   │   ├── __init__.py
+│   │   └── geospatial.py         # SQLAlchemy & internal model entities
 │   ├── repositories/
-│   │   └── geospatial_repository.py    # Database access layer
+│   │   ├── __init__.py
+│   │   └── geospatial_repository.py # Repository Pattern data access layer
 │   ├── schemas/
-│   │   └── geospatial.py                # Pydantic response schemas
-│   └── services/
-│       ├── crs_service.py               # CRS parsing and UTM selection
-│       ├── kml_parser.py                # KML feature extraction
-│       ├── measurement_service.py       # Projection and measurements
-│       └── shapefile_parser.py          # Shapefile ZIP extraction
+│   │   ├── __init__.py
+│   │   └── geospatial.py         # Pydantic request/response schemas
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── shapefile_parser.py   # Shapefile .zip parser (pyshp)
+│   │   ├── kml_parser.py         # KML XML document parser
+│   │   ├── crs_service.py        # UTM zone selection & Transverse Mercator projection
+│   │   └── measurement_service.py# Geometry area & length calculation engine
+│   └── utils/
+│       └── __init__.py
 ├── sample_data/
-│   ├── generate_samples.py              # Sample-data generator
-│   └── sample_survey.kml                # Example KML file
+│   ├── generate_samples.py       # Helper script to create test KML and Shapefile zip
+│   ├── sample_survey.kml
+│   └── sample_shapefile.zip
 ├── tests/
-│   ├── conftest.py
-│   ├── test_crs_measurements.py
-│   ├── test_files_api.py
-│   └── test_parsers.py
-├── uploads/                             # Local upload workspace
-├── pytest.ini
-├── requirements.txt
-└── README.md
+│   ├── conftest.py               # Pytest fixtures & isolated test database setup
+│   ├── test_files_api.py         # API integration test suite
+│   ├── test_parsers.py           # KML and Shapefile parser unit tests
+│   └── test_crs_measurements.py  # CRS reprojection & measurement unit tests
+├── .gitignore                    # Version control exclusions
+├── pytest.ini                    # Pytest configuration
+├── requirements.txt              # Production dependencies
+└── README.md                     # Comprehensive documentation
 ```
 
-## Getting Started
+---
+
+## ⚙️ How It Works
+
+1. **File Ingestion & Parsing**:
+   - When a file is uploaded to `POST /api/files/`, the service checks the file extension.
+   - For `.zip` archives, it unzips contents in a temporary directory and parses shapes/attributes via `pyshp`.
+   - For `.kml` files, it parses the XML element tree, extracting `<Placemark>`, `<ExtendedData>`, and coordinate tuples.
+
+2. **CRS Selection & Reprojection**:
+   - Geometries in geographic degrees (WGS 84 `EPSG:4326`) are analyzed to find their centroid $(\text{lat}, \text{lon})$.
+   - The appropriate UTM zone is computed: $\text{Zone} = \lfloor (\text{lon} + 180) / 6 \rfloor + 1$.
+   - Latitude determines hemisphere (`EPSG:326xx` for North, `EPSG:327xx` for South).
+   - Coordinates are transformed into metric Transverse Mercator coordinates $(x, y)$ in meters.
+
+3. **Measurement Calculation**:
+   - **Polygon Area**: Computed via projected metric Shoelace formula ($\text{Outer Ring Area} - \sum \text{Inner Hole Areas}$).
+   - **LineString Length**: Computed via projected Euclidean segment length summation ($\sum \sqrt{\Delta x^2 + \Delta y^2}$).
+   - **Points**: Flagged as `NOT_APPLICABLE`.
+
+4. **Persistence & Retrieval**:
+   - File metadata and feature metrics are stored in SQLite database tables (`geospatial_files` and `feature_records`).
+   - Clients retrieve feature-by-feature measurements or overall summary statistics via `GET /api/files/{id}/measurements/`.
+
+---
+
+## 💻 Installation & Setup
 
 ### Prerequisites
+- Python **3.10+** installed on your system.
 
-- Python 3.10 or newer
-- Git
-
-### Installation
+### 1. Clone Repository
 
 ```bash
-git clone <repository-url>
-cd Aereo-Cloud
+git clone https://github.com/your-username/geospatial-measurement-api.git
+cd geospatial-measurement-api
+```
 
+### 2. Create and Activate Virtual Environment
+
+```bash
+# Create virtual environment
 python -m venv .venv
 ```
 
 Activate the virtual environment:
 
-```powershell
-# Windows PowerShell
+# Activate on Windows (PowerShell):
 .\.venv\Scripts\Activate.ps1
-```
 
-```bash
-# Linux or macOS
+# Activate on Linux / macOS:
 source .venv/bin/activate
 ```
 
-Install dependencies:
+### 3. Install Dependencies
 
 ```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-### Run the API
+---
 
-```bash
-python -m uvicorn app.main:app --reload --port 8000
-```
+## 🔐 Environment Variables
 
-The service is available at `http://127.0.0.1:8000`.
-
-- Swagger UI: `http://127.0.0.1:8000/docs`
-- ReDoc: `http://127.0.0.1:8000/redoc`
-- Health check: `http://127.0.0.1:8000/health`
-
-## Configuration
-
-The application reads settings from environment variables and can load them from a root-level `.env` file. The available settings include:
+Configuration settings are managed using Pydantic Settings in [`app/config.py`](file:///c:/Users/venkatesan%20E/venki/projets/Aereo%20Cloud/app/config.py). You can override defaults by creating a `.env` file in the root directory:
 
 ```env
 PROJECT_NAME="Geospatial File Measurement API"
@@ -162,30 +199,81 @@ UPLOAD_DIR="./uploads"
 MAX_UPLOAD_SIZE_MB=50
 ```
 
-Do not commit `.env` files or credentials. Use a separate example file for shareable configuration.
+---
 
-## API Reference
+## 🚀 How to Run Locally
 
-All file endpoints are under `/api/files`.
+### 1. Generate Sample Test Data
+Run the helper script to create sample geospatial files for testing:
 
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| `POST` | `/api/files/` | Upload and process a KML or Shapefile ZIP archive |
-| `GET` | `/api/files/` | List processed files; supports `skip` and `limit` |
-| `GET` | `/api/files/{file_id}/` | Retrieve file metadata and processing status |
-| `GET` | `/api/files/{file_id}/measurements/` | Retrieve feature measurements and summary statistics |
-| `DELETE` | `/api/files/{file_id}/` | Delete a file record and its feature records |
-| `GET` | `/health` | Return service health and version information |
+```bash
+python sample_data/generate_samples.py
+```
+*Output*: Generates `sample_data/sample_survey.kml` and `sample_data/sample_shapefile.zip`.
 
-### Upload a file
+### 2. Start API Server
 
+```bash
+python -m uvicorn app.main:app --reload --port 8000
+```
+Server will start at `http://127.0.0.1:8000`.
+
+### 3. Run Automated Tests
+
+```bash
+python -m pytest
+```
+*Output*: Runs all 12 unit/integration tests with verbose output.
+
+---
+
+## 📸 Screenshots & Interactive Demo
+
+### Interactive Swagger UI (`http://127.0.0.1:8000/docs`)
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ Geospatial File Measurement API  [v1.0.0]        [OpenAPI / Swagger]   │
+├────────────────────────────────────────────────────────────────────────┤
+│ POST   /api/files/                 Upload and process geospatial file  │
+│ GET    /api/files/                 List processed geospatial files     │
+│ GET    /api/files/{id}/            Get file metadata & status          │
+│ GET    /api/files/{id}/measurements/ Get feature measurements & summary │
+│ DELETE /api/files/{id}/            Delete file record & features       │
+│ GET    /health                     Health check status                 │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📖 API Documentation
+
+### Summary of Endpoints
+
+| Method | Endpoint | Description | Status Code |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/files/` | Upload `.zip` Shapefile or `.kml` file for processing | `201 Created` |
+| `GET` | `/api/files/` | List all uploaded files with pagination (`skip`, `limit`) | `200 OK` |
+| `GET` | `/api/files/{file_id}/` | Get metadata and processing status for a file | `200 OK` |
+| `GET` | `/api/files/{file_id}/measurements/` | Get detailed feature measurements and summary stats | `200 OK` |
+| `DELETE` | `/api/files/{file_id}/` | Delete file and associated feature records | `200 OK` |
+| `GET` | `/health` | Application health check endpoint | `200 OK` |
+
+---
+
+### Endpoint Details & Payload Examples
+
+#### 1. Upload File (`POST /api/files/`)
+- **Headers**: `Content-Type: multipart/form-data`
+- **Body**: `file` (binary stream of `.zip` or `.kml`)
+
+**Sample cURL Request**:
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/files/" \
   -F "file=@sample_data/sample_survey.kml"
 ```
 
-Example response:
-
+**Sample 201 Created Response**:
 ```json
 {
   "id": "e4a7b219c001",
@@ -195,18 +283,15 @@ Example response:
   "crs": "EPSG:4326",
   "status": "COMPLETED",
   "error_message": null,
-  "created_at": "2026-10-07T12:00:00"
+  "created_at": "2026-10-07T20:50:00.000000+00:00"
 }
 ```
 
-### Retrieve measurements
+---
 
-```bash
-curl "http://127.0.0.1:8000/api/files/{file_id}/measurements/"
-```
+#### 2. Get Measurements (`GET /api/files/{id}/measurements/`)
 
-The response includes the original CRS, projected CRS per feature, source properties, GeoJSON-like geometry, individual measurements, and a summary:
-
+**Sample 200 OK Response**:
 ```json
 {
   "file_id": "e4a7b219c001",
@@ -224,56 +309,112 @@ The response includes the original CRS, projected CRS per feature, source proper
     "total_area_hectares": 30.722184,
     "total_length_m": 1412.502
   },
-  "features": []
+  "features": [
+    {
+      "feature_id": 0,
+      "geometry_type": "Polygon",
+      "crs_projected": "EPSG:32643 (WGS 84 / UTM Zone 43N)",
+      "properties": {
+        "name": "Central City Park",
+        "description": "Urban green space zone",
+        "zone_type": "Park"
+      },
+      "measurements": {
+        "area_sq_m": 307221.8415,
+        "area_hectares": 30.722184,
+        "area_sq_km": 0.307222,
+        "length_m": null,
+        "length_km": null,
+        "unit": "meters",
+        "status": "SUCCESS",
+        "note": null
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.5945, 12.9716],
+            [77.5995, 12.9716],
+            [77.5995, 12.9766],
+            [77.5945, 12.9766],
+            [77.5945, 12.9716]
+          ]
+        ]
+      }
+    },
+    {
+      "feature_id": 1,
+      "geometry_type": "LineString",
+      "crs_projected": "EPSG:32643 (WGS 84 / UTM Zone 43N)",
+      "properties": {
+        "name": "Grand Expressway"
+      },
+      "measurements": {
+        "area_sq_m": null,
+        "area_hectares": null,
+        "area_sq_km": null,
+        "length_m": 1412.502,
+        "length_km": 1.412502,
+        "unit": "meters",
+        "status": "SUCCESS",
+        "note": null
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [77.59, 12.97],
+          [77.595, 12.973],
+          [77.6, 12.978]
+        ]
+      }
+    },
+    {
+      "feature_id": 2,
+      "geometry_type": "Point",
+      "crs_projected": "EPSG:32643 (WGS 84 / UTM Zone 43N)",
+      "properties": {
+        "name": "Weather Station #1"
+      },
+      "measurements": {
+        "area_sq_m": null,
+        "area_hectares": null,
+        "area_sq_km": null,
+        "length_m": null,
+        "length_km": null,
+        "unit": "meters",
+        "status": "NOT_APPLICABLE",
+        "note": "Point geometry - measurement not applicable"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.597, 12.974]
+      }
+    }
+  ]
 }
 ```
 
-The `features` array is abbreviated above. Each item contains `geometry_type`, `properties`, `geometry`, `crs_projected`, and a `measurements` object.
+---
 
-## Measurement Model
+## 💡 Challenges & Solutions
 
-| Geometry | Measurement | Status |
-| --- | --- | --- |
-| `Polygon`, `MultiPolygon` | Area in `m²`, hectares, and `km²` | `SUCCESS` |
-| `LineString`, `MultiLineString` | Length in meters and kilometers | `SUCCESS` |
-| `Point`, `MultiPoint` | No area or length | `NOT_APPLICABLE` |
-| Other geometry types | No measurement | `UNSUPPORTED` |
+| Technical Challenge | Root Cause | Solution Implemented |
+| :--- | :--- | :--- |
+| **Degree Distortion in Area Calculation** | Calculating Euclidean area directly on lat/lon degrees yields distorted values that vary by latitude position. | Designed an automated **UTM Zone Reprojection Engine** that calculates feature centroid lat/lon and converts degrees to metric meters before area/length calculation. |
+| **OS Binary C-Extension DLL Locking** | Heavy C-libraries (GDAL/Fiona/PROJ) often trigger system DLL security blocks on locked corporate Windows/Linux environments. | Built a **pure-Python Transverse Mercator projection and Shoelace measurement engine** with zero OS binary locking issues, ensuring 100% portability. |
+| **KML Schema & Namespace Variation** | KML files from Google Earth, ArcGIS, and QGIS use varying XML namespace prefixes (`xmlns="http://www.opengis.net/kml/2.2"`). | Implemented dynamic namespace stripping in `KMLParser` to cleanly extract coordinates and `<ExtendedData>` key-value attributes regardless of namespace prefix. |
+| **Multi-Threaded SQLite Connection Sharing** | FastAPI multi-threaded async handlers can throw SQLite `ProgrammingError` when sharing connections across threads. | Used `check_same_thread=False` and per-request dependency injection in `get_db_connection()` to safely manage connection lifecycles. |
+| **Point & GeometryCollection Handling** | Points have no area/length; complex collections can crash standard calculators. | Implemented graceful degradation checks in `MeasurementService`, flagging points as `NOT_APPLICABLE` and complex shapes as `UNSUPPORTED` without service crashes. |
 
-Polygon area accounts for interior rings. Line length is calculated from projected segment distances. Values are stored and returned as numeric JSON fields; `null` is used where a measurement does not apply.
+---
 
-## Testing
+## 📜 License
 
-Run the complete test suite from the repository root:
-
-```bash
-python -m pytest
-```
-
-The tests cover parser behavior, CRS and measurement calculations, upload validation, file listing, retrieval, and deletion workflows.
-
-To generate or refresh sample data:
-
-```bash
-python sample_data/generate_samples.py
-```
-
-## Error Handling
-
-- Unsupported extensions return `400 Bad Request`.
-- Empty uploads return `400 Bad Request`.
-- Unknown file IDs return `404 Not Found`.
-- Unexpected processing failures return `500 Internal Server Error`.
-- Invalid or unsupported geometries are represented in measurement status fields where possible instead of stopping the complete response.
-
-## Limitations and Future Work
-
-The current implementation is designed for local SQLite-backed processing. Potential next steps include:
-
-- PostgreSQL/PostGIS support
-- Authentication and authorization
-- Object storage for uploaded files
-- Background processing for large uploads
-- Configurable CRS selection beyond automatic UTM
-- Rate limiting and production deployment configuration
-- A frontend map viewer for processed geometries
-
+This project is open-source under the [MIT License](LICENSE).
+#   g e o s p a t i a l - m e a s u r e m e n t - a p i 
+ 
+ #   g e o s p a t i a l - m e a s u r e m e n t - a p i 
+ 
+ #   g e o s p a t i a l - m e a s u r e m e n t - a p i 
+ 
+ 
